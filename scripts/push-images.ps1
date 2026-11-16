@@ -51,34 +51,71 @@ $repos = $outputs.ecr_repository_urls.value
 $region = $outputs.region.value
 $registry = ($repos.backend -split '/')[0]
 
-# 3. Docker login to ECR with a 12-hour token derived from your AWS session.
-Write-Host "Logging Docker in to $registry" -ForegroundColor Cyan
-Invoke-Native 'ECR login' { aws ecr get-login-password --region $region | docker login --username AWS --password-stdin $registry }
+# 3. ECR credentials for the push, kept in a throwaway Docker config folder.
+#    Why not `aws ecr get-login-password | docker login --password-stdin`?
+#     - Windows PowerShell 5.1 alters text piped between native programs, so ECR
+#       rejects the password (400 Bad Request).
+#     - Docker on Windows saves logins in Windows Credential Manager, which can't
+#       hold tokens this large (~4 KB from `aws login` sessions).
+#    Writing the auth entry directly avoids both. The 12-hour token is deleted in
+#    the `finally` block below, so it never lingers on disk.
+$token = aws ecr get-login-password --region $region
+if ($LASTEXITCODE -ne 0 -or -not $token) { throw 'Could not get an ECR token (run `aws login`)' }
+$engine = (docker context inspect --format '{{.Endpoints.docker.Host}}').Trim() # keep using Docker Desktop's engine
+$pushConfig = Join-Path ([IO.Path]::GetTempPath()) ("ecr-push-" + [guid]::NewGuid())
+New-Item -ItemType Directory $pushConfig | Out-Null
+$auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("AWS:$token"))
+@{ auths = @{ $registry = @{ auth = $auth } } } | ConvertTo-Json -Depth 4 |
+  Set-Content -Encoding ascii (Join-Path $pushConfig 'config.json')
+Remove-Variable token, auth
+
+function Invoke-WithEcrAuth([scriptblock]$Command) {
+  $env:DOCKER_CONFIG = $pushConfig
+  $env:DOCKER_HOST = $engine
+  try { & $Command } finally { Remove-Item Env:DOCKER_CONFIG, Env:DOCKER_HOST -ErrorAction SilentlyContinue }
+}
+
+function Test-ImageTagExists([string]$RepoName) {
+  # PowerShell 5.1 turns a native command's stderr into a terminating error when
+  # $ErrorActionPreference is Stop, so relax it for this expected "not found".
+  $ErrorActionPreference = 'Continue'
+  aws ecr describe-images --region $region --repository-name $RepoName --image-ids imageTag=$tag 2>&1 | Out-Null
+  return ($LASTEXITCODE -eq 0)
+}
 
 $services = if ($Service -eq 'all') { @('backend', 'frontend') } else { @($Service) }
 
+try {
 foreach ($svc in $services) {
   $repoUrl = $repos.$svc
   $repoName = ($repoUrl -split '/', 2)[1]
   $image = "${repoUrl}:${tag}"
 
   # 4. Skip if this exact tag is already in ECR (immutable tags can't be overwritten).
-  aws ecr describe-images --region $region --repository-name $repoName --image-ids imageTag=$tag 2>$null | Out-Null
-  if ($LASTEXITCODE -eq 0) {
+  if (Test-ImageTagExists $repoName) {
     Write-Host "[$svc] $tag already in ECR, skipping" -ForegroundColor Yellow
     continue
   }
 
-  # 5. Build and push.
+  # 5. Build (normal Docker config) and push (temporary ECR credentials).
   Write-Host "[$svc] Building $image ($Platform)" -ForegroundColor Cyan
-  Invoke-Native "[$svc] docker build" { docker build --platform $Platform -t $image "$root/$svc" }
+  # --provenance/--sbom=false: push one plain image manifest. Otherwise Docker
+  # pushes an image *index* + untagged children, which ECR basic scanning skips
+  # and the "expire untagged" lifecycle rule could delete out from under the tag.
+  Invoke-Native "[$svc] docker build" {
+    docker build --platform $Platform --provenance=false --sbom=false -t $image "$root/$svc"
+  }
 
   Write-Host "[$svc] Pushing" -ForegroundColor Cyan
-  Invoke-Native "[$svc] docker push" { docker push $image }
+  Invoke-WithEcrAuth { Invoke-Native "[$svc] docker push" { docker push $image } }
 
   # 6. Wait for the scan-on-push result and summarise it.
   Write-Host "[$svc] Waiting for vulnerability scan" -ForegroundColor Cyan
   aws ecr wait image-scan-complete --region $region --repository-name $repoName --image-id imageTag=$tag
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "[$svc] Scan did not complete; check the ECR console for this image"
+    continue
+  }
   $counts = aws ecr describe-image-scan-findings --region $region --repository-name $repoName --image-id imageTag=$tag `
     --query 'imageScanFindings.findingSeverityCounts' --output json | ConvertFrom-Json
   if ($counts) {
@@ -86,6 +123,10 @@ foreach ($svc in $services) {
   } else {
     Write-Host "[$svc] Scan findings: none" -ForegroundColor Green
   }
+}
+}
+finally {
+  Remove-Item -Recurse -Force $pushConfig -ErrorAction SilentlyContinue
 }
 
 Write-Host "`nDone. Deploy with image tag: $tag" -ForegroundColor Green
