@@ -12,6 +12,26 @@ output "private_db_subnet_ids" { value = aws_subnet.private_db[*].id }
 
 output "private_app_route_table_id" { value = aws_route_table.private_app.id }
 
+output "ecr_repository_urls" {
+  value = { for k, r in aws_ecr_repository.service : k => r.repository_url }
+}
+
+output "log_group_names" {
+  value = { for k, g in aws_cloudwatch_log_group.service : k => g.name }
+}
+
+output "execution_role_arns" {
+  value = { for k, r in aws_iam_role.execution : k => r.arn }
+}
+
+output "execution_role_names" {
+  value = { for k, r in aws_iam_role.execution : k => r.name }
+}
+
+output "task_role_arns" {
+  value = { for k, r in aws_iam_role.task : k => r.arn }
+}
+
 output "security_group_ids" {
   value = {
     alb      = aws_security_group.alb.id
