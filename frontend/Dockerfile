@@ -17,6 +17,9 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
+# Pull in OS security patches the base image doesn't have yet
+# (e.g. CVE-2026-4738 in zlib, flagged CRITICAL by ECR scanning).
+RUN apk upgrade --no-cache
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 USER node

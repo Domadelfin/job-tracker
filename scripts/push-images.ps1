@@ -111,13 +111,25 @@ foreach ($svc in $services) {
 
   # 6. Wait for the scan-on-push result and summarise it.
   Write-Host "[$svc] Waiting for vulnerability scan" -ForegroundColor Cyan
-  aws ecr wait image-scan-complete --region $region --repository-name $repoName --image-id imageTag=$tag
-  if ($LASTEXITCODE -ne 0) {
-    Write-Warning "[$svc] Scan did not complete; check the ECR console for this image"
+  # ECR registers the scan a little after the push completes, so poll for it
+  # (the built-in `aws ecr wait` gives up immediately with ScanNotFoundException).
+  $scan = $null
+  for ($i = 0; $i -lt 24; $i++) {
+    Start-Sleep -Seconds 5
+    $ErrorActionPreference = 'Continue'
+    $raw = aws ecr describe-image-scan-findings --region $region --repository-name $repoName --image-id imageTag=$tag `
+      --query '{status:imageScanStatus.status,counts:imageScanFindings.findingSeverityCounts}' --output json 2>$null
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -eq 0) {
+      $scan = $raw | ConvertFrom-Json
+      if ($scan.status -in 'COMPLETE', 'FAILED', 'UNSUPPORTED_IMAGE') { break }
+    }
+  }
+  if (-not $scan -or $scan.status -ne 'COMPLETE') {
+    Write-Warning "[$svc] Scan not complete (status: $($scan.status)); check the ECR console"
     continue
   }
-  $counts = aws ecr describe-image-scan-findings --region $region --repository-name $repoName --image-id imageTag=$tag `
-    --query 'imageScanFindings.findingSeverityCounts' --output json | ConvertFrom-Json
+  $counts = $scan.counts
   if ($counts) {
     Write-Host "[$svc] Scan findings: $(($counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', ')" -ForegroundColor Yellow
   } else {

@@ -8,6 +8,10 @@ FROM node:22-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Pull in OS security patches the base image doesn't have yet
+# (e.g. CVE-2026-4738 in zlib, flagged CRITICAL by ECR scanning).
+RUN apk upgrade --no-cache
+
 # Amazon RDS CA bundle so TLS connections to RDS can be verified.
 ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /app/certs/rds-global-bundle.pem
 
