@@ -21,7 +21,11 @@ variable "db_instance_class" {
 }
 
 variable "nat_instance_type" {
-  description = "Tiny Graviton instance doing NAT. Network bandwidth is the only thing it needs."
+  description = <<-EOT
+    Tiny Graviton (ARM) instance doing NAT. Must be Free-plan eligible: the Free
+    plan rejects other types (t4g.nano fails). List allowed types with:
+    aws ec2 describe-instance-types --filters Name=free-tier-eligible,Values=true
+  EOT
   type        = string
-  default     = "t4g.nano"
+  default     = "t4g.micro"
 }
