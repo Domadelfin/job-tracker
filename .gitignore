@@ -15,6 +15,7 @@ next-env.d.ts
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
 *.tfvars
 !*.tfvars.example
 crash.log
