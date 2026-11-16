@@ -130,7 +130,7 @@ foreach ($svc in $services) {
     continue
   }
   $counts = $scan.counts
-  if ($counts) {
+  if ($counts -and @($counts.PSObject.Properties).Count -gt 0) {
     Write-Host "[$svc] Scan findings: $(($counts.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', ')" -ForegroundColor Yellow
   } else {
     Write-Host "[$svc] Scan findings: none" -ForegroundColor Green
