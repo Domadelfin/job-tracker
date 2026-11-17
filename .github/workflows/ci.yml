@@ -1,0 +1,82 @@
+# Continuous integration: runs on every push and pull request.
+# Needs NO AWS access: it proves the code tests, builds and containerizes.
+# Images are pushed to ECR separately with scripts/push-images.ps1 using
+# short-lived `aws login` credentials (the project's SCP blocks GitHub OIDC).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read # least privilege for the GitHub token too
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Format check
+        run: terraform fmt -check -recursive infra
+      - name: Validate foundation (no AWS credentials needed)
+        working-directory: infra/foundation
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Validate runtime (no AWS credentials needed)
+        working-directory: infra/runtime
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  docker:
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service }} image (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

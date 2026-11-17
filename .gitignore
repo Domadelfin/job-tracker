@@ -15,6 +15,7 @@ next-env.d.ts
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
 *.tfvars
 !*.tfvars.example
 crash.log
@@ -23,3 +24,5 @@ crash.log
 .DS_Store
 Thumbs.db
 .vscode/
+
+CLAUDE.md
